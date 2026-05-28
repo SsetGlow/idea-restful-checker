@@ -1,0 +1,43 @@
+<idea-plugin>
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <applicationService serviceImplementation="com.ssetglow.restfulchecker.settings.RestCheckerGlobalSettings"/>
+        <projectService serviceImplementation="com.ssetglow.restfulchecker.settings.RestCheckerSettings"/>
+        <projectService serviceImplementation="com.ssetglow.restfulchecker.endpoint.RestEndpointService"/>
+        <applicationConfigurable
+                parentId="tools"
+                id="com.ssetglow.idea-restful-checker.global-settings"
+                displayName="idea-restful-checker"
+                instance="com.ssetglow.restfulchecker.settings.RestCheckerGlobalConfigurable"/>
+        <projectConfigurable
+                parentId="tools"
+                id="com.ssetglow.idea-restful-checker.settings"
+                displayName="idea-restful-checker Project"
+                instance="com.ssetglow.restfulchecker.settings.RestCheckerConfigurable"/>
+        <codeInsight.lineMarkerProvider
+                language="JAVA"
+                implementationClass="com.ssetglow.restfulchecker.gutter.RestEndpointLineMarkerProvider"/>
+    </extensions>
+
+    <actions>
+        <action
+                id="com.ssetglow.idea-restful-checker.SearchEndpoints"
+                class="com.ssetglow.restfulchecker.action.SearchEndpointAction"
+                text="Search REST Endpoint"
+                description="Search project REST endpoints and call one">
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta BACK_SLASH" replace-all="true"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="control BACK_SLASH"/>
+            <add-to-group group-id="ToolsMenu" anchor="first"/>
+        </action>
+
+        <action
+                id="com.ssetglow.idea-restful-checker.CallEndpointAtCaret"
+                class="com.ssetglow.restfulchecker.action.CallEndpointAtCaretAction"
+                text="Call REST Endpoint"
+                description="Call the REST endpoint at the current caret">
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+        </action>
+    </actions>
+</idea-plugin>
