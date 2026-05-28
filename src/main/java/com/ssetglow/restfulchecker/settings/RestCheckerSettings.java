@@ -146,6 +146,8 @@ public final class RestCheckerSettings implements PersistentStateComponent<RestC
         public Map<String, String> requestParams = new LinkedHashMap<>();
         public Map<String, String> headers = new LinkedHashMap<>();
         public String body = "";
+        public String responseText = "";
+        public String responseBody = "";
 
         public EndpointRequestData copy() {
             EndpointRequestData copy = new EndpointRequestData();
@@ -155,6 +157,8 @@ public final class RestCheckerSettings implements PersistentStateComponent<RestC
             copy.requestParams = requestParams == null ? new LinkedHashMap<>() : new LinkedHashMap<>(requestParams);
             copy.headers = headers == null ? new LinkedHashMap<>() : new LinkedHashMap<>(headers);
             copy.body = body == null ? "" : body;
+            copy.responseText = responseText == null ? "" : responseText;
+            copy.responseBody = responseBody == null ? "" : responseBody;
             return copy;
         }
     }

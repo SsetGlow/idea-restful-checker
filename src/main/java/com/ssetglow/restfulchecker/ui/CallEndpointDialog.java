@@ -8,6 +8,8 @@ import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
+import com.intellij.openapi.util.IconLoader;
+import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
 import com.intellij.ui.components.JBTextField;
@@ -32,6 +34,8 @@ import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.ScrollPaneConstants;
 import javax.swing.SwingUtilities;
+import javax.swing.KeyStroke;
+import javax.swing.Timer;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.text.JTextComponent;
@@ -45,7 +49,9 @@ import java.awt.Window;
 import java.awt.event.ActionEvent;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
+import java.awt.event.InputEvent;
 import java.awt.event.ItemEvent;
+import java.awt.event.KeyEvent;
 import java.awt.datatransfer.StringSelection;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -73,7 +79,12 @@ public final class CallEndpointDialog extends DialogWrapper {
     private KeyValueTable requestParamsTable;
     private KeyValueTable headersTable;
     private JBTextArea bodyArea;
+    private JLabel bodyValidationLabel;
     private JBTextArea responseView;
+    private JButton copyResponseBodyButton;
+    private JLabel copyResponseBodyStatus;
+    private Timer copyResponseBodyStatusTimer;
+    private String responseBody = "";
 
     public CallEndpointDialog(Project project, RestEndpoint endpoint) {
         super(project, true);
@@ -110,11 +121,18 @@ public final class CallEndpointDialog extends DialogWrapper {
         headersTable = new KeyValueTable("Key", "Value", initialHeaders(), 3);
         bodyArea = area(endpoint.normallyHasRequestBody() ? 8 : 4);
         bodyArea.setText(initialBody());
+        bodyValidationLabel = new JLabel();
+        bodyValidationLabel.setForeground(JBColor.RED);
+        bodyValidationLabel.setVisible(false);
+        installBodyJsonSupport();
         responseView = area(9);
         responseView.setEditable(false);
-        responseView.setFocusable(false);
-        responseView.setBorder(BorderFactory.createEmptyBorder());
-        responseView.setOpaque(false);
+        responseView.setFocusable(true);
+        responseView.setLineWrap(false);
+        responseView.setText(initialResponseText());
+        responseBody = initialResponseBody();
+        copyResponseBodyButton = createCopyResponseBodyButton();
+        copyResponseBodyStatus = createCopyResponseBodyStatus();
 
         DocumentListener previewListener = new DocumentListener() {
             @Override
@@ -138,6 +156,7 @@ public final class CallEndpointDialog extends DialogWrapper {
         }
         pathVariablesTable.addChangeListener(tablePreviewListener);
         requestParamsTable.addChangeListener(tablePreviewListener);
+        headersTable.addChangeListener(this::updateBodyValidation);
         Component editorComponent = hostCombo.getEditor().getEditorComponent();
         if (editorComponent instanceof JTextComponent textComponent) {
             textComponent.getDocument().addDocumentListener(previewListener);
@@ -156,15 +175,13 @@ public final class CallEndpointDialog extends DialogWrapper {
         addRow(form, row++, "Path variables", pathVariablesTable);
         addRow(form, row++, "Request params", requestParamsTable);
         addRow(form, row++, "Headers", headersTable);
-        addTextRow(form, row++, "Body", bodyArea);
+        addBodyRow(form, row++, "Body", bodyArea, bodyValidationLabel);
 
-        JBScrollPane responseScroll = new JBScrollPane(responseView);
-        responseScroll.setBorder(BorderFactory.createEmptyBorder());
-        responseScroll.getViewport().setOpaque(false);
         JPanel responsePanel = new JPanel(new BorderLayout(0, 4));
-        responsePanel.add(new JLabel("Response"), BorderLayout.NORTH);
-        responsePanel.add(responseScroll, BorderLayout.CENTER);
+        responsePanel.add(createResponseHeader(), BorderLayout.NORTH);
+        responsePanel.add(new JBScrollPane(responseView), BorderLayout.CENTER);
         responsePanel.setPreferredSize(new Dimension(820, 180));
+        updateCopyResponseBodyButton();
 
         JPanel content = new JPanel(new BorderLayout());
         content.add(form, BorderLayout.CENTER);
@@ -177,6 +194,7 @@ public final class CallEndpointDialog extends DialogWrapper {
         panel.setPreferredSize(new Dimension(860, 760));
         panel.setMinimumSize(new Dimension(860, 520));
         updatePreview();
+        updateBodyValidation();
         return panel;
     }
 
@@ -198,27 +216,27 @@ public final class CallEndpointDialog extends DialogWrapper {
     @Override
     protected void doOKAction() {
         setOKActionEnabled(false);
-        responseView.setText("Sending...");
         RequestData requestData;
         try {
             commitTableEdits();
             requestData = buildRequestData();
         } catch (RuntimeException exception) {
-            responseView.setText(exception.getMessage());
+            showTransientResponse(exception.getMessage());
             setOKActionEnabled(true);
             return;
         }
 
         settings.rememberHost(requestData.hostTemplate());
         rememberEndpointRequest();
+        showTransientResponse("Sending...");
         ProgressManager.getInstance().run(new Task.Backgroundable(project, "Calling REST endpoint", false) {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
-                String responseText = execute(requestData);
+                ResponseData responseData = execute(requestData);
                 ApplicationManager.getApplication().invokeLater(() -> {
                     if (!isDisposed()) {
-                        responseView.setText(responseText);
-                        responseView.setCaretPosition(0);
+                        setResponse(responseData);
+                        rememberEndpointRequest();
                         setOKActionEnabled(true);
                     }
                 }, ModalityState.any());
@@ -234,10 +252,9 @@ public final class CallEndpointDialog extends DialogWrapper {
             rememberEndpointRequest();
             String curl = toCurlCommand(requestData);
             CopyPasteManager.getInstance().setContents(new StringSelection(curl));
-            responseView.setText("Copied cURL to clipboard.\n\n" + curl);
-            responseView.setCaretPosition(0);
+            showTransientResponse("Copied cURL to clipboard.\n\n" + curl);
         } catch (RuntimeException exception) {
-            responseView.setText(exception.getMessage());
+            showTransientResponse(exception.getMessage());
         }
     }
 
@@ -264,10 +281,125 @@ public final class CallEndpointDialog extends DialogWrapper {
         String url = PathUtil.joinUrl(host, path);
         url = PathUtil.appendQuery(url, resolveMap(requestParamsTable.toMap(), variables));
         String method = "ANY".equals(endpoint.getHttpMethod()) ? "GET" : endpoint.getHttpMethod();
-        return new RequestData(hostTemplate, method, url, resolveMap(headersTable.toMap(), variables), bodyArea.getText());
+        Map<String, String> headers = resolveMap(headersTable.toMap(), variables);
+        validateBodyJsonOrThrow(headers, bodyArea.getText());
+        return new RequestData(hostTemplate, method, url, headers, bodyArea.getText());
     }
 
-    private String execute(RequestData requestData) {
+    private void installBodyJsonSupport() {
+        bodyArea.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent event) {
+                updateBodyValidation();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent event) {
+                updateBodyValidation();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent event) {
+                updateBodyValidation();
+            }
+        });
+
+        bodyArea.getInputMap(JComponent.WHEN_FOCUSED).put(
+                KeyStroke.getKeyStroke(KeyEvent.VK_L, InputEvent.META_DOWN_MASK | InputEvent.ALT_DOWN_MASK),
+                "formatJsonBody");
+        bodyArea.getActionMap().put("formatJsonBody", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent event) {
+                formatBodyJson();
+            }
+        });
+    }
+
+    private void formatBodyJson() {
+        String body = bodyArea.getText();
+        if (body == null || body.isBlank()) {
+            clearBodyValidation();
+            return;
+        }
+        JsonBodyFormatter.JsonFormatResult result = JsonBodyFormatter.formatJson(body);
+        if (!result.valid()) {
+            showBodyValidation("Invalid JSON: " + result.errorMessage());
+            return;
+        }
+        int caretPosition = bodyArea.getCaretPosition();
+        bodyArea.setText(result.formatted());
+        bodyArea.setCaretPosition(Math.min(caretPosition, bodyArea.getText().length()));
+        clearBodyValidation();
+    }
+
+    private void updateBodyValidation() {
+        if (bodyValidationLabel == null || bodyArea == null || headersTable == null) {
+            return;
+        }
+        String error = bodyJsonError(headersTable.toMap(), bodyArea.getText());
+        if (error == null) {
+            clearBodyValidation();
+        } else {
+            showBodyValidation("Invalid JSON: " + error);
+        }
+    }
+
+    private void validateBodyJsonOrThrow(Map<String, String> headers, String body) {
+        String error = bodyJsonError(headers, body);
+        if (error != null) {
+            showBodyValidation("Invalid JSON: " + error);
+            bodyArea.requestFocusInWindow();
+            throw new IllegalArgumentException("Body JSON is invalid: " + error);
+        }
+    }
+
+    @Nullable
+    private static String bodyJsonError(Map<String, String> headers, String body) {
+        if (!shouldValidateJsonBody(headers, body)) {
+            return null;
+        }
+        JsonBodyFormatter.JsonFormatResult result = JsonBodyFormatter.formatJson(body);
+        return result.valid() ? null : result.errorMessage();
+    }
+
+    private static boolean shouldValidateJsonBody(Map<String, String> headers, String body) {
+        if (body == null || body.isBlank()) {
+            return false;
+        }
+        String contentType = headerValue(headers, "content-type");
+        String trimmed = body.trim();
+        return (contentType != null && contentType.toLowerCase().contains("json"))
+                || trimmed.startsWith("{")
+                || trimmed.startsWith("[");
+    }
+
+    @Nullable
+    private static String headerValue(Map<String, String> headers, String targetKey) {
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(targetKey)) {
+                return entry.getValue();
+            }
+        }
+        return null;
+    }
+
+    private void showBodyValidation(String message) {
+        bodyValidationLabel.setText(message);
+        bodyValidationLabel.setVisible(true);
+        bodyValidationLabel.getParent().revalidate();
+        bodyValidationLabel.getParent().repaint();
+    }
+
+    private void clearBodyValidation() {
+        bodyValidationLabel.setText("");
+        bodyValidationLabel.setVisible(false);
+        if (bodyValidationLabel.getParent() != null) {
+            bodyValidationLabel.getParent().revalidate();
+            bodyValidationLabel.getParent().repaint();
+        }
+    }
+
+    private ResponseData execute(RequestData requestData) {
         try {
             HttpRequest.Builder builder = HttpRequest.newBuilder()
                     .uri(URI.create(requestData.url()))
@@ -291,11 +423,13 @@ public final class CallEndpointDialog extends DialogWrapper {
                     .send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
             return formatResponse(requestData, response);
         } catch (Exception exception) {
-            return requestData.method() + " " + requestData.url() + "\n\n" + exception.getClass().getSimpleName() + ": " + exception.getMessage();
+            return new ResponseData(
+                    requestData.method() + " " + requestData.url() + "\n\n" + exception.getClass().getSimpleName() + ": " + exception.getMessage(),
+                    "");
         }
     }
 
-    private static String formatResponse(RequestData requestData, HttpResponse<String> response) {
+    private static ResponseData formatResponse(RequestData requestData, HttpResponse<String> response) {
         StringBuilder builder = new StringBuilder();
         builder.append(requestData.method()).append(' ').append(requestData.url()).append("\n\n");
         builder.append("Status: ").append(response.statusCode()).append("\n");
@@ -305,8 +439,78 @@ public final class CallEndpointDialog extends DialogWrapper {
                 .append(String.join(", ", values))
                 .append('\n'));
         String contentType = response.headers().firstValue("content-type").orElse("");
-        builder.append('\n').append(JsonBodyFormatter.formatIfJson(contentType, response.body()));
-        return builder.toString();
+        String responseBody = JsonBodyFormatter.formatIfJson(contentType, response.body());
+        builder.append('\n').append(responseBody);
+        return new ResponseData(builder.toString(), responseBody);
+    }
+
+    private JPanel createResponseHeader() {
+        JPanel header = new JPanel(new BorderLayout());
+        JPanel copyPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+        copyPanel.add(copyResponseBodyStatus);
+        copyPanel.add(copyResponseBodyButton);
+        header.add(new JLabel("Response"), BorderLayout.WEST);
+        header.add(copyPanel, BorderLayout.EAST);
+        return header;
+    }
+
+    private JButton createCopyResponseBodyButton() {
+        JButton button = new JButton(IconLoader.getIcon("/icons/copyResponseBody.svg", CallEndpointDialog.class));
+        button.setToolTipText("Copy response body");
+        button.setFocusable(false);
+        button.addActionListener(event -> copyResponseBody());
+        return button;
+    }
+
+    private JLabel createCopyResponseBodyStatus() {
+        JLabel label = new JLabel("Copied");
+        label.setForeground(JBColor.GRAY);
+        label.setVisible(false);
+        return label;
+    }
+
+    private void copyResponseBody() {
+        if (responseBody == null || responseBody.isBlank()) {
+            return;
+        }
+        CopyPasteManager.getInstance().setContents(new StringSelection(responseBody));
+        showCopyResponseBodyFeedback();
+    }
+
+    private void showCopyResponseBodyFeedback() {
+        copyResponseBodyStatus.setVisible(true);
+        copyResponseBodyStatus.revalidate();
+        copyResponseBodyStatus.repaint();
+        if (copyResponseBodyStatusTimer != null && copyResponseBodyStatusTimer.isRunning()) {
+            copyResponseBodyStatusTimer.stop();
+        }
+        copyResponseBodyStatusTimer = new Timer(1200, event -> {
+            copyResponseBodyStatus.setVisible(false);
+            copyResponseBodyStatus.revalidate();
+            copyResponseBodyStatus.repaint();
+        });
+        copyResponseBodyStatusTimer.setRepeats(false);
+        copyResponseBodyStatusTimer.start();
+    }
+
+    private void setResponse(ResponseData responseData) {
+        responseView.setText(responseData.text());
+        responseView.setCaretPosition(0);
+        responseBody = responseData.body();
+        updateCopyResponseBodyButton();
+    }
+
+    private void showTransientResponse(String responseText) {
+        responseView.setText(responseText == null ? "" : responseText);
+        responseView.setCaretPosition(0);
+        responseBody = "";
+        updateCopyResponseBodyButton();
+    }
+
+    private void updateCopyResponseBodyButton() {
+        if (copyResponseBodyButton != null) {
+            copyResponseBodyButton.setEnabled(responseBody != null && !responseBody.isBlank());
+        }
     }
 
     private void updatePreview() {
@@ -370,6 +574,20 @@ public final class CallEndpointDialog extends DialogWrapper {
         return savedRequest.body;
     }
 
+    private String initialResponseText() {
+        if (savedRequest == null || savedRequest.responseText == null) {
+            return "";
+        }
+        return savedRequest.responseText;
+    }
+
+    private String initialResponseBody() {
+        if (savedRequest == null || savedRequest.responseBody == null) {
+            return "";
+        }
+        return savedRequest.responseBody;
+    }
+
     private void rememberEndpointRequest() {
         RestCheckerSettings.EndpointRequestData data = new RestCheckerSettings.EndpointRequestData();
         data.hostTemplate = currentHostTemplate();
@@ -380,6 +598,8 @@ public final class CallEndpointDialog extends DialogWrapper {
         data.requestParams = requestParamsTable.toMap();
         data.headers = changedValues(headersTable.toMap(), defaultHeaders());
         data.body = bodyArea.getText();
+        data.responseText = responseView.getText();
+        data.responseBody = responseBody;
         settings.rememberEndpointRequest(endpointKey, data);
     }
 
@@ -485,6 +705,18 @@ public final class CallEndpointDialog extends DialogWrapper {
 
         GridBagConstraints componentConstraints = componentConstraints(row);
         form.add(new JBScrollPane(area), componentConstraints);
+    }
+
+    private static void addBodyRow(JPanel form, int row, String label, JBTextArea area, JLabel validationLabel) {
+        GridBagConstraints labelConstraints = labelConstraints(row);
+        form.add(new JLabel(label), labelConstraints);
+
+        JPanel bodyPanel = new JPanel(new BorderLayout(0, 4));
+        bodyPanel.add(new JBScrollPane(area), BorderLayout.CENTER);
+        bodyPanel.add(validationLabel, BorderLayout.SOUTH);
+
+        GridBagConstraints componentConstraints = componentConstraints(row);
+        form.add(bodyPanel, componentConstraints);
     }
 
     private static GridBagConstraints labelConstraints(int row) {
@@ -728,5 +960,8 @@ public final class CallEndpointDialog extends DialogWrapper {
     }
 
     private record RequestData(String hostTemplate, String method, String url, Map<String, String> headers, String body) {
+    }
+
+    private record ResponseData(String text, String body) {
     }
 }

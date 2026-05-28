@@ -15,6 +15,10 @@ import com.intellij.psi.PsiManager;
 import com.intellij.psi.PsiMethod;
 import com.intellij.psi.search.FileTypeIndex;
 import com.intellij.psi.search.GlobalSearchScope;
+import com.intellij.psi.util.CachedValue;
+import com.intellij.psi.util.CachedValueProvider;
+import com.intellij.psi.util.CachedValuesManager;
+import com.intellij.psi.util.PsiModificationTracker;
 import com.ssetglow.restfulchecker.config.ProjectConfigResolver;
 import com.ssetglow.restfulchecker.util.PathUtil;
 import org.jetbrains.annotations.Nullable;
@@ -26,14 +30,19 @@ import java.util.Map;
 
 public final class RestEndpointService {
     private final Project project;
+    private final CachedValue<List<RestEndpoint>> endpointsCache;
 
     public RestEndpointService(Project project) {
         this.project = project;
+        this.endpointsCache = CachedValuesManager.getManager(project).createCachedValue(() -> {
+            Map<String, String> projectConfig = ProjectConfigResolver.resolve(project);
+            List<RestEndpoint> endpoints = ReadAction.compute(() -> scanEndpointsInReadAction(projectConfig));
+            return CachedValueProvider.Result.create(endpoints, PsiModificationTracker.getInstance(project));
+        }, false);
     }
 
     public List<RestEndpoint> scanEndpoints() {
-        Map<String, String> projectConfig = ProjectConfigResolver.resolve(project);
-        return ReadAction.compute(() -> scanEndpointsInReadAction(projectConfig));
+        return endpointsCache.getValue();
     }
 
     @Nullable
