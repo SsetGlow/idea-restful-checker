@@ -1,13 +1,15 @@
-# idea-restful-checker
+# restful-checker
 
 IntelliJ IDEA plugin for searching Spring-style REST endpoints and calling them from the editor.
 
 ## Features
 
 - Search REST endpoints with `Command + \` on macOS.
+- Browse and call endpoints from the right-side `Restful` tool window.
 - Show a gutter action on Spring mapping methods.
 - Call endpoints with editable hosts, headers, query parameters, request bodies, and path variables.
-- Resolve host placeholders from project configuration and plugin variables.
+- Infer first-time request params and body defaults from explicit `@RequestParam` and `@RequestBody` parameters.
+- Resolve host placeholders and Spring path prefixes from project configuration and plugin variables.
 
 ## Development
 

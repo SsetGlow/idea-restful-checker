@@ -80,11 +80,11 @@ java {
 }
 
 intellijPlatform {
-    projectName = "idea-restful-checker"
+    projectName = "restful-checker"
 
     pluginConfiguration {
-        id = "com.ssetglow.idea-restful-checker"
-        name = "idea-restful-checker"
+        id = "com.ssetglow.restful-checker"
+        name = "restful-checker"
         version = pluginVersionProvider
         description = """
             <p>Search and call Spring-style REST endpoints directly from IntelliJ IDEA.</p>

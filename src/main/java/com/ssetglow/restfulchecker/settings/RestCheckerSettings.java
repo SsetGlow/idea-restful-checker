@@ -12,7 +12,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-@State(name = "IdeaRestfulCheckerSettings", storages = @Storage(StoragePathMacros.WORKSPACE_FILE))
+@State(name = "RestfulCheckerSettings", storages = @Storage(StoragePathMacros.WORKSPACE_FILE))
 public final class RestCheckerSettings implements PersistentStateComponent<RestCheckerSettings.StateData> {
     public static final String DEFAULT_HOST = "http://localhost:${server.port:8080}";
     public static final String DEFAULT_HEADERS = "Accept: application/json\nContent-Type: application/json";
@@ -110,6 +110,16 @@ public final class RestCheckerSettings implements PersistentStateComponent<RestC
         state.endpointRequests.put(key, data.copy());
     }
 
+    public int getCurlInfoHeight() {
+        ensureDefaults();
+        return Math.max(0, state.curlInfoHeight);
+    }
+
+    public void setCurlInfoHeight(int curlInfoHeight) {
+        ensureDefaults();
+        state.curlInfoHeight = Math.max(0, curlInfoHeight);
+    }
+
     private void ensureDefaults() {
         if (state == null) {
             state = new StateData();
@@ -137,6 +147,7 @@ public final class RestCheckerSettings implements PersistentStateComponent<RestC
         public Map<String, String> variables = new LinkedHashMap<>();
         public String defaultHeaders = DEFAULT_HEADERS;
         public Map<String, EndpointRequestData> endpointRequests = new LinkedHashMap<>();
+        public int curlInfoHeight = 0;
     }
 
     public static final class EndpointRequestData {

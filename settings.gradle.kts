@@ -21,4 +21,4 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "idea-restful-checker"
+rootProject.name = "restful-checker"

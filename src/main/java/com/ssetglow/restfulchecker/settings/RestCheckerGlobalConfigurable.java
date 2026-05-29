@@ -14,31 +14,38 @@ import javax.swing.JPanel;
 import java.awt.BorderLayout;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 public final class RestCheckerGlobalConfigurable implements SearchableConfigurable {
     private JPanel panel;
+    private JBTextArea hostsArea;
     private JBTextArea variablesArea;
     private JBTextArea headersArea;
 
     @Override
     public @NotNull String getId() {
-        return "com.ssetglow.idea-restful-checker.global-settings";
+        return "com.ssetglow.restful-checker.global-settings";
     }
 
     @Override
     public @Nls String getDisplayName() {
-        return "idea-restful-checker";
+        return "restful-checker";
     }
 
     @Override
     public @Nullable JComponent createComponent() {
+        hostsArea = area(4);
         variablesArea = area(7);
         headersArea = area(6);
 
         JPanel form = new JPanel(new GridBagLayout());
-        addRow(form, 0, "Global variables", variablesArea);
-        addRow(form, 1, "Global HTTP headers", headersArea);
+        addRow(form, 0, "Global hosts", hostsArea);
+        addRow(form, 1, "Global variables", variablesArea);
+        addRow(form, 2, "Global HTTP headers", headersArea);
 
         panel = new JPanel(new BorderLayout());
         panel.add(form, BorderLayout.NORTH);
@@ -49,23 +56,26 @@ public final class RestCheckerGlobalConfigurable implements SearchableConfigurab
     @Override
     public boolean isModified() {
         RestCheckerGlobalSettings settings = RestCheckerGlobalSettings.getInstance();
-        return !Objects.equals(KeyValueParser.parseLines(variablesArea.getText()), settings.getVariables())
+        return !Objects.equals(parseHosts(), settings.getHosts())
+                || !Objects.equals(KeyValueParser.parseLines(variablesArea.getText()), settings.getVariables())
                 || !Objects.equals(headersArea.getText(), settings.getDefaultHeaders());
     }
 
     @Override
     public void apply() {
         RestCheckerGlobalSettings settings = RestCheckerGlobalSettings.getInstance();
+        settings.setHosts(parseHosts());
         settings.setVariables(KeyValueParser.parseLines(variablesArea.getText()));
         settings.setDefaultHeaders(headersArea.getText());
     }
 
     @Override
     public void reset() {
-        if (variablesArea == null) {
+        if (hostsArea == null) {
             return;
         }
         RestCheckerGlobalSettings settings = RestCheckerGlobalSettings.getInstance();
+        hostsArea.setText(String.join("\n", settings.getHosts()));
         variablesArea.setText(KeyValueParser.formatLines(settings.getVariables()));
         headersArea.setText(settings.getDefaultHeaders());
     }
@@ -73,8 +83,20 @@ public final class RestCheckerGlobalConfigurable implements SearchableConfigurab
     @Override
     public void disposeUIResources() {
         panel = null;
+        hostsArea = null;
         variablesArea = null;
         headersArea = null;
+    }
+
+    private List<String> parseHosts() {
+        if (hostsArea == null || hostsArea.getText().isBlank()) {
+            return new ArrayList<>();
+        }
+        return Arrays.stream(hostsArea.getText().split("\\R"))
+                .map(String::trim)
+                .filter(line -> !line.isBlank() && !line.startsWith("#"))
+                .distinct()
+                .collect(Collectors.toCollection(ArrayList::new));
     }
 
     private static JBTextArea area(int rows) {

@@ -25,7 +25,7 @@ public final class CallEndpointAtCaretAction extends DumbAwareAction {
 
         RestEndpoint endpoint = project.getService(RestEndpointService.class).findEndpointAtCaret(editor, file);
         if (endpoint == null) {
-            Messages.showInfoMessage(project, "Place the caret inside a Spring REST mapping method.", "idea-restful-checker");
+            Messages.showInfoMessage(project, "Place the caret inside a Spring REST mapping method.", "restful-checker");
             return;
         }
         new CallEndpointDialog(project, endpoint).show();

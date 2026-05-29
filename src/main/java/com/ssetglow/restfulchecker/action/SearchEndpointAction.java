@@ -57,7 +57,7 @@ public final class SearchEndpointAction extends DumbAwareAction {
             return;
         }
         if (endpoints.isEmpty()) {
-            Messages.showInfoMessage(project, "No Spring REST endpoints were found in this project.", "idea-restful-checker");
+            Messages.showInfoMessage(project, "No Spring REST endpoints were found in this project.", "restful-checker");
             return;
         }
         EndpointSearchDialog dialog = new EndpointSearchDialog(project, endpoints);
@@ -72,7 +72,7 @@ public final class SearchEndpointAction extends DumbAwareAction {
             file = LocalFileSystem.getInstance().refreshAndFindFileByPath(endpoint.getFilePath());
         }
         if (file == null) {
-            Messages.showErrorDialog(project, "Cannot find source file:\n" + endpoint.getFilePath(), "idea-restful-checker");
+            Messages.showErrorDialog(project, "Cannot find source file:\n" + endpoint.getFilePath(), "restful-checker");
             return;
         }
         new OpenFileDescriptor(project, file, endpoint.getTextOffset()).navigate(true);

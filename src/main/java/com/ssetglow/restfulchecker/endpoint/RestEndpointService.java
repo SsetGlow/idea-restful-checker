@@ -1,10 +1,11 @@
 package com.ssetglow.restfulchecker.endpoint;
 
 import com.intellij.ide.highlighter.JavaFileType;
-import com.intellij.openapi.application.ReadAction;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.fileTypes.FileTypeRegistry;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.Computable;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.JavaRecursiveElementWalkingVisitor;
 import com.intellij.psi.PsiClass;
@@ -36,7 +37,7 @@ public final class RestEndpointService {
         this.project = project;
         this.endpointsCache = CachedValuesManager.getManager(project).createCachedValue(() -> {
             Map<String, String> projectConfig = ProjectConfigResolver.resolve(project);
-            List<RestEndpoint> endpoints = ReadAction.compute(() -> scanEndpointsInReadAction(projectConfig));
+            List<RestEndpoint> endpoints = readAction(() -> scanEndpointsInReadAction(projectConfig));
             return CachedValueProvider.Result.create(endpoints, PsiModificationTracker.getInstance(project));
         }, false);
     }
@@ -48,7 +49,7 @@ public final class RestEndpointService {
     @Nullable
     public RestEndpoint findEndpointAtCaret(Editor editor, PsiFile file) {
         Map<String, String> projectConfig = ProjectConfigResolver.resolve(project);
-        return ReadAction.compute(() -> {
+        return readAction(() -> {
             PsiElement element = file.findElementAt(editor.getCaretModel().getOffset());
             while (element != null && !(element instanceof PsiMethod)) {
                 element = element.getParent();
@@ -59,6 +60,10 @@ public final class RestEndpointService {
             }
             return null;
         });
+    }
+
+    private static <T> T readAction(Computable<T> computable) {
+        return ApplicationManager.getApplication().runReadAction(computable);
     }
 
     @Nullable

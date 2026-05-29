@@ -13,7 +13,9 @@ import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
 import com.intellij.ui.components.JBTextField;
+import com.intellij.util.ui.JBUI;
 import com.ssetglow.restfulchecker.config.ProjectConfigResolver;
+import com.ssetglow.restfulchecker.endpoint.EndpointRequestDefaults;
 import com.ssetglow.restfulchecker.endpoint.RestEndpoint;
 import com.ssetglow.restfulchecker.settings.RestCheckerGlobalSettings;
 import com.ssetglow.restfulchecker.settings.RestCheckerSettings;
@@ -33,16 +35,24 @@ import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.ScrollPaneConstants;
+import javax.swing.JSplitPane;
+import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
 import javax.swing.KeyStroke;
 import javax.swing.Timer;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import javax.swing.plaf.basic.BasicSplitPaneDivider;
+import javax.swing.plaf.basic.BasicSplitPaneUI;
 import javax.swing.text.JTextComponent;
 import java.awt.BorderLayout;
 import java.awt.Component;
+import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
+import java.awt.FontMetrics;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Window;
@@ -52,6 +62,8 @@ import java.awt.event.FocusEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.ItemEvent;
 import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.datatransfer.StringSelection;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -66,12 +78,17 @@ import java.util.Map;
 import java.util.Objects;
 
 public final class CallEndpointDialog extends DialogWrapper {
+    private static final int REQUEST_BODY_ROWS = 8;
+    private static final int OPTIONAL_BODY_ROWS = 4;
+    private static final int BODY_TAB_INITIAL_ROWS = 3;
+
     private final Project project;
     private final RestEndpoint endpoint;
     private final RestCheckerSettings settings;
     private final RestCheckerGlobalSettings globalSettings;
     private final String endpointKey;
     private final RestCheckerSettings.EndpointRequestData savedRequest;
+    private final EndpointRequestDefaults.RequestDefaults inferredRequestDefaults;
     private JComboBox<String> hostCombo;
     private JBTextField urlPreview;
     private KeyValueTable variablesTable;
@@ -79,8 +96,10 @@ public final class CallEndpointDialog extends DialogWrapper {
     private KeyValueTable requestParamsTable;
     private KeyValueTable headersTable;
     private JBTextArea bodyArea;
+    private JBTextArea curlArea;
     private JLabel bodyValidationLabel;
-    private JBTextArea responseView;
+    private JBTextArea responseHeaderView;
+    private JBTextArea responseBodyView;
     private JButton copyResponseBodyButton;
     private JLabel copyResponseBodyStatus;
     private Timer copyResponseBodyStatusTimer;
@@ -94,6 +113,7 @@ public final class CallEndpointDialog extends DialogWrapper {
         this.globalSettings = RestCheckerGlobalSettings.getInstance();
         this.endpointKey = endpointKey(endpoint);
         this.savedRequest = settings.getEndpointRequest(endpointKey);
+        this.inferredRequestDefaults = savedRequest == null ? EndpointRequestDefaults.forEndpoint(project, endpoint) : null;
         setTitle("Call REST Endpoint");
         init();
         setOKButtonText("Send");
@@ -101,7 +121,7 @@ public final class CallEndpointDialog extends DialogWrapper {
 
     @Override
     protected @Nullable JComponent createCenterPanel() {
-        hostCombo = new JComboBox<>(settings.getHosts().toArray(new String[0]));
+        hostCombo = new JComboBox<>(globalSettings.getHosts().toArray(new String[0]));
         hostCombo.setEditable(true);
         hostCombo.setSelectedItem(initialHostTemplate());
         hostCombo.addItemListener(event -> {
@@ -119,17 +139,26 @@ public final class CallEndpointDialog extends DialogWrapper {
         pathVariablesTable = new KeyValueTable("Key", "Value", initialPathVariables(), 3);
         requestParamsTable = new KeyValueTable("Key", "Value", initialRequestParams(), 3);
         headersTable = new KeyValueTable("Key", "Value", initialHeaders(), 3);
-        bodyArea = area(endpoint.normallyHasRequestBody() ? 8 : 4);
+        bodyArea = area(endpoint.normallyHasRequestBody() ? REQUEST_BODY_ROWS : OPTIONAL_BODY_ROWS);
         bodyArea.setText(initialBody());
+        curlArea = area(8);
+        curlArea.setEditable(false);
+        curlArea.setFocusable(true);
+        curlArea.setLineWrap(true);
         bodyValidationLabel = new JLabel();
         bodyValidationLabel.setForeground(JBColor.RED);
-        bodyValidationLabel.setVisible(false);
+        bodyValidationLabel.setText(" ");
         installBodyJsonSupport();
-        responseView = area(9);
-        responseView.setEditable(false);
-        responseView.setFocusable(true);
-        responseView.setLineWrap(false);
-        responseView.setText(initialResponseText());
+        responseHeaderView = area(9);
+        responseHeaderView.setEditable(false);
+        responseHeaderView.setFocusable(true);
+        responseHeaderView.setLineWrap(false);
+        responseHeaderView.setText(initialResponseHeaderText());
+        responseBodyView = area(9);
+        responseBodyView.setEditable(false);
+        responseBodyView.setFocusable(true);
+        responseBodyView.setLineWrap(false);
+        responseBodyView.setText(initialResponseBody());
         responseBody = initialResponseBody();
         copyResponseBodyButton = createCopyResponseBodyButton();
         copyResponseBodyStatus = createCopyResponseBodyStatus();
@@ -156,7 +185,10 @@ public final class CallEndpointDialog extends DialogWrapper {
         }
         pathVariablesTable.addChangeListener(tablePreviewListener);
         requestParamsTable.addChangeListener(tablePreviewListener);
-        headersTable.addChangeListener(this::updateBodyValidation);
+        headersTable.addChangeListener(() -> {
+            updateBodyValidation();
+            updatePreview();
+        });
         Component editorComponent = hostCombo.getEditor().getEditorComponent();
         if (editorComponent instanceof JTextComponent textComponent) {
             textComponent.getDocument().addDocumentListener(previewListener);
@@ -167,32 +199,33 @@ public final class CallEndpointDialog extends DialogWrapper {
         addRow(form, row++, "Method", new JLabel(endpoint.getHttpMethod()));
         addRow(form, row++, "Path", new JLabel(endpoint.getPath()));
         addRow(form, row++, "Source", new JLabel(endpoint.getQualifiedMethodName()));
+        addRow(form, row++, "Scan prefix", new JLabel(scannedPrefixText()));
         addRow(form, row++, "Host", hostCombo);
         if (variablesTable != null) {
             addRow(form, row++, "Variables", variablesTable);
         }
         addRow(form, row++, "URL", urlPreview);
-        addRow(form, row++, "Path variables", pathVariablesTable);
-        addRow(form, row++, "Request params", requestParamsTable);
-        addRow(form, row++, "Headers", headersTable);
-        addBodyRow(form, row++, "Body", bodyArea, bodyValidationLabel);
+        addRow(form, row++, "Request", createRequestTabs());
 
-        JPanel responsePanel = new JPanel(new BorderLayout(0, 4));
-        responsePanel.add(createResponseHeader(), BorderLayout.NORTH);
-        responsePanel.add(new JBScrollPane(responseView), BorderLayout.CENTER);
-        responsePanel.setPreferredSize(new Dimension(820, 180));
+        JPanel requestPanel = new JPanel(new BorderLayout());
+        requestPanel.add(form, BorderLayout.NORTH);
+
+        JBScrollPane requestScrollPane = new JBScrollPane(requestPanel);
+        requestScrollPane.setBorder(BorderFactory.createEmptyBorder());
+        requestScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        requestScrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+
+        JSplitPane leftPanel = createLeftPanel(requestScrollPane);
+        JPanel responsePanel = createResponsePanel();
         updateCopyResponseBodyButton();
 
-        JPanel content = new JPanel(new BorderLayout());
-        content.add(form, BorderLayout.CENTER);
-        content.add(responsePanel, BorderLayout.SOUTH);
-
-        JBScrollPane panel = new JBScrollPane(content);
-        panel.setBorder(BorderFactory.createEmptyBorder());
-        panel.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-        panel.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
-        panel.setPreferredSize(new Dimension(860, 760));
-        panel.setMinimumSize(new Dimension(860, 520));
+        JSplitPane panel = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, responsePanel);
+        styleSplitPane(panel);
+        panel.setContinuousLayout(true);
+        panel.setResizeWeight(0.64);
+        panel.setDividerLocation(JBUI.scale(760));
+        panel.setPreferredSize(new Dimension(1180, 760));
+        panel.setMinimumSize(new Dimension(960, 560));
         updatePreview();
         updateBodyValidation();
         return panel;
@@ -205,12 +238,7 @@ public final class CallEndpointDialog extends DialogWrapper {
 
     @Override
     protected Action @NotNull [] createActions() {
-        return new Action[]{getOKAction(), new AbstractAction("Copy cURL") {
-            @Override
-            public void actionPerformed(ActionEvent event) {
-                copyCurl();
-            }
-        }, getCancelAction()};
+        return new Action[]{getOKAction(), getCancelAction()};
     }
 
     @Override
@@ -226,7 +254,7 @@ public final class CallEndpointDialog extends DialogWrapper {
             return;
         }
 
-        settings.rememberHost(requestData.hostTemplate());
+        globalSettings.rememberHost(requestData.hostTemplate());
         rememberEndpointRequest();
         showTransientResponse("Sending...");
         ProgressManager.getInstance().run(new Task.Backgroundable(project, "Calling REST endpoint", false) {
@@ -242,20 +270,6 @@ public final class CallEndpointDialog extends DialogWrapper {
                 }, ModalityState.any());
             }
         });
-    }
-
-    private void copyCurl() {
-        try {
-            commitTableEdits();
-            RequestData requestData = buildRequestData();
-            settings.rememberHost(requestData.hostTemplate());
-            rememberEndpointRequest();
-            String curl = toCurlCommand(requestData);
-            CopyPasteManager.getInstance().setContents(new StringSelection(curl));
-            showTransientResponse("Copied cURL to clipboard.\n\n" + curl);
-        } catch (RuntimeException exception) {
-            showTransientResponse(exception.getMessage());
-        }
     }
 
     private void commitTableEdits() {
@@ -278,12 +292,12 @@ public final class CallEndpointDialog extends DialogWrapper {
         if (path.contains("{") || path.contains("}")) {
             throw new IllegalArgumentException("Some path variables are still unresolved.");
         }
-        String url = PathUtil.joinUrl(host, path);
-        url = PathUtil.appendQuery(url, resolveMap(requestParamsTable.toMap(), variables));
+        String pathWithQuery = PathUtil.appendQuery(path, resolveMap(requestParamsTable.toMap(), variables));
+        String url = PathUtil.joinUrl(host, pathWithQuery);
         String method = "ANY".equals(endpoint.getHttpMethod()) ? "GET" : endpoint.getHttpMethod();
         Map<String, String> headers = resolveMap(headersTable.toMap(), variables);
         validateBodyJsonOrThrow(headers, bodyArea.getText());
-        return new RequestData(hostTemplate, method, url, headers, bodyArea.getText());
+        return new RequestData(hostTemplate, method, url, pathWithQuery, headers, bodyArea.getText());
     }
 
     private void installBodyJsonSupport() {
@@ -291,16 +305,19 @@ public final class CallEndpointDialog extends DialogWrapper {
             @Override
             public void insertUpdate(DocumentEvent event) {
                 updateBodyValidation();
+                updatePreview();
             }
 
             @Override
             public void removeUpdate(DocumentEvent event) {
                 updateBodyValidation();
+                updatePreview();
             }
 
             @Override
             public void changedUpdate(DocumentEvent event) {
                 updateBodyValidation();
+                updatePreview();
             }
         });
 
@@ -316,6 +333,10 @@ public final class CallEndpointDialog extends DialogWrapper {
     }
 
     private void formatBodyJson() {
+        formatBodyJsonIfPossible();
+    }
+
+    private void formatBodyJsonIfPossible() {
         String body = bodyArea.getText();
         if (body == null || body.isBlank()) {
             clearBodyValidation();
@@ -330,6 +351,25 @@ public final class CallEndpointDialog extends DialogWrapper {
         bodyArea.setText(result.formatted());
         bodyArea.setCaretPosition(Math.min(caretPosition, bodyArea.getText().length()));
         clearBodyValidation();
+    }
+
+    private void formatResponseBodyIfPossible() {
+        if (responseBodyView == null) {
+            return;
+        }
+        String body = responseBodyView.getText();
+        if (body == null || body.isBlank()) {
+            return;
+        }
+        JsonBodyFormatter.JsonFormatResult result = JsonBodyFormatter.formatJson(body);
+        if (!result.valid()) {
+            return;
+        }
+        int caretPosition = responseBodyView.getCaretPosition();
+        responseBodyView.setText(result.formatted());
+        responseBodyView.setCaretPosition(Math.min(caretPosition, responseBodyView.getText().length()));
+        responseBody = responseBodyView.getText();
+        updateCopyResponseBodyButton();
     }
 
     private void updateBodyValidation() {
@@ -385,14 +425,12 @@ public final class CallEndpointDialog extends DialogWrapper {
 
     private void showBodyValidation(String message) {
         bodyValidationLabel.setText(message);
-        bodyValidationLabel.setVisible(true);
         bodyValidationLabel.getParent().revalidate();
         bodyValidationLabel.getParent().repaint();
     }
 
     private void clearBodyValidation() {
-        bodyValidationLabel.setText("");
-        bodyValidationLabel.setVisible(false);
+        bodyValidationLabel.setText(" ");
         if (bodyValidationLabel.getParent() != null) {
             bodyValidationLabel.getParent().revalidate();
             bodyValidationLabel.getParent().repaint();
@@ -440,8 +478,118 @@ public final class CallEndpointDialog extends DialogWrapper {
                 .append('\n'));
         String contentType = response.headers().firstValue("content-type").orElse("");
         String responseBody = JsonBodyFormatter.formatIfJson(contentType, response.body());
-        builder.append('\n').append(responseBody);
         return new ResponseData(builder.toString(), responseBody);
+    }
+
+    private JTabbedPane createRequestTabs() {
+        JTabbedPane tabs = new JTabbedPane();
+        tabs.addTab("Path variables", pathVariablesTable);
+        tabs.addTab("Request params", requestParamsTable);
+        tabs.addTab("Headers", headersTable);
+        tabs.addTab("Body", new ResizableBodyPanel(
+                bodyArea,
+                bodyValidationLabel,
+                fixedTextAreaHeight(bodyArea, BODY_TAB_INITIAL_ROWS)
+        ));
+        tabs.addChangeListener(event -> {
+            if (tabs.getSelectedComponent() instanceof ResizableBodyPanel) {
+                formatBodyJsonIfPossible();
+            }
+        });
+        return tabs;
+    }
+
+    private JSplitPane createLeftPanel(JComponent requestScrollPane) {
+        JPanel curlPanel = createCurlPanel();
+        int savedCurlHeight = settings.getCurlInfoHeight();
+        curlPanel.setPreferredSize(new Dimension(1, savedCurlHeight > 0 ? savedCurlHeight : JBUI.scale(300)));
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, requestScrollPane, curlPanel);
+        styleSplitPane(splitPane);
+        splitPane.setContinuousLayout(true);
+        splitPane.setResizeWeight(0.6);
+        splitPane.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY, event -> rememberCurlInfoHeight(splitPane));
+        SwingUtilities.invokeLater(() -> {
+            int height = splitPane.getHeight();
+            int curlHeight = settings.getCurlInfoHeight();
+            if (height > 0 && curlHeight > 0 && height > curlHeight + splitPane.getDividerSize()) {
+                splitPane.setDividerLocation(height - curlHeight - splitPane.getDividerSize());
+            } else {
+                splitPane.setDividerLocation(0.6);
+            }
+        });
+        return splitPane;
+    }
+
+    private JPanel createCurlPanel() {
+        JPanel panel = new JPanel(new BorderLayout(0, 4));
+        JPanel header = new JPanel(new BorderLayout());
+        header.add(new JLabel("cUrl 信息"), BorderLayout.WEST);
+
+        JBScrollPane scrollPane = new JBScrollPane(curlArea);
+        scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+        panel.add(header, BorderLayout.NORTH);
+        panel.add(scrollPane, BorderLayout.CENTER);
+        panel.setMinimumSize(new Dimension(1, JBUI.scale(160)));
+        return panel;
+    }
+
+    private void rememberCurlInfoHeight(JSplitPane splitPane) {
+        int height = splitPane.getHeight();
+        if (height <= 0) {
+            return;
+        }
+        int curlHeight = height - splitPane.getDividerLocation() - splitPane.getDividerSize();
+        if (curlHeight > 0) {
+            settings.setCurlInfoHeight(curlHeight);
+        }
+    }
+
+    private JPanel createResponsePanel() {
+        JPanel responsePanel = new JPanel(new BorderLayout(0, 4));
+        JTabbedPane responseTabs = new JTabbedPane();
+        responseTabs.addTab("Header", responseScrollPane(responseHeaderView));
+        responseTabs.addTab("Body", responseScrollPane(responseBodyView));
+        responseTabs.addChangeListener(event -> {
+            if (responseTabs.getSelectedIndex() == 1) {
+                formatResponseBodyIfPossible();
+            }
+        });
+        responsePanel.add(createResponseHeader(), BorderLayout.NORTH);
+        responsePanel.add(responseTabs, BorderLayout.CENTER);
+        responsePanel.setPreferredSize(new Dimension(420, 720));
+        responsePanel.setMinimumSize(new Dimension(340, 320));
+        return responsePanel;
+    }
+
+    private static JBScrollPane responseScrollPane(JBTextArea textArea) {
+        JBScrollPane scrollPane = new JBScrollPane(textArea);
+        scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+        return scrollPane;
+    }
+
+    private static void styleSplitPane(JSplitPane splitPane) {
+        splitPane.setBorder(BorderFactory.createEmptyBorder());
+        splitPane.setDividerSize(JBUI.scale(6));
+        splitPane.setOpaque(false);
+        splitPane.setUI(new BasicSplitPaneUI() {
+            @Override
+            public BasicSplitPaneDivider createDefaultDivider() {
+                return new BasicSplitPaneDivider(this) {
+                    {
+                        setBorder(BorderFactory.createEmptyBorder());
+                    }
+
+                    @Override
+                    public void paint(Graphics graphics) {
+                        graphics.setColor(JBColor.border());
+                        graphics.fillRect(0, 0, getWidth(), getHeight());
+                    }
+                };
+            }
+        });
     }
 
     private JPanel createResponseHeader() {
@@ -494,15 +642,18 @@ public final class CallEndpointDialog extends DialogWrapper {
     }
 
     private void setResponse(ResponseData responseData) {
-        responseView.setText(responseData.text());
-        responseView.setCaretPosition(0);
+        responseHeaderView.setText(responseData.headers());
+        responseHeaderView.setCaretPosition(0);
+        responseBodyView.setText(responseData.body());
+        responseBodyView.setCaretPosition(0);
         responseBody = responseData.body();
         updateCopyResponseBodyButton();
     }
 
     private void showTransientResponse(String responseText) {
-        responseView.setText(responseText == null ? "" : responseText);
-        responseView.setCaretPosition(0);
+        responseHeaderView.setText(responseText == null ? "" : responseText);
+        responseHeaderView.setCaretPosition(0);
+        responseBodyView.setText("");
         responseBody = "";
         updateCopyResponseBodyButton();
     }
@@ -514,13 +665,26 @@ public final class CallEndpointDialog extends DialogWrapper {
     }
 
     private void updatePreview() {
-        if (urlPreview == null) {
+        if (urlPreview == null && curlArea == null) {
             return;
         }
         try {
-            urlPreview.setText(buildRequestData().url());
+            RequestData requestData = buildRequestData();
+            if (urlPreview != null) {
+                urlPreview.setText(requestData.pathPreview());
+            }
+            if (curlArea != null) {
+                curlArea.setText(toCurlCommand(requestData));
+                curlArea.setCaretPosition(0);
+            }
         } catch (RuntimeException exception) {
-            urlPreview.setText(exception.getMessage());
+            if (urlPreview != null) {
+                urlPreview.setText(exception.getMessage());
+            }
+            if (curlArea != null) {
+                curlArea.setText(exception.getMessage());
+                curlArea.setCaretPosition(0);
+            }
         }
     }
 
@@ -533,7 +697,7 @@ public final class CallEndpointDialog extends DialogWrapper {
         if (savedRequest != null && savedRequest.hostTemplate != null && !savedRequest.hostTemplate.isBlank()) {
             return savedRequest.hostTemplate;
         }
-        return settings.getActiveHost();
+        return globalSettings.getActiveHost();
     }
 
     private Map<String, String> initialVariables() {
@@ -553,10 +717,10 @@ public final class CallEndpointDialog extends DialogWrapper {
     }
 
     private Map<String, String> initialRequestParams() {
-        if (savedRequest == null || savedRequest.requestParams == null) {
-            return Map.of();
+        if (savedRequest != null && savedRequest.requestParams != null) {
+            return new LinkedHashMap<>(savedRequest.requestParams);
         }
-        return new LinkedHashMap<>(savedRequest.requestParams);
+        return inferredRequestDefaults == null ? Map.of() : new LinkedHashMap<>(inferredRequestDefaults.requestParams());
     }
 
     private Map<String, String> initialHeaders() {
@@ -568,24 +732,29 @@ public final class CallEndpointDialog extends DialogWrapper {
     }
 
     private String initialBody() {
-        if (savedRequest == null || savedRequest.body == null) {
-            return "";
+        if (savedRequest != null) {
+            return savedRequest.body == null ? "" : savedRequest.body;
         }
-        return savedRequest.body;
+        return inferredRequestDefaults == null ? "" : inferredRequestDefaults.body();
     }
 
-    private String initialResponseText() {
+    private String initialResponseHeaderText() {
         if (savedRequest == null || savedRequest.responseText == null) {
             return "";
         }
-        return savedRequest.responseText;
+        String text = savedRequest.responseText;
+        String body = savedRequest.responseBody == null ? "" : savedRequest.responseBody;
+        if (!body.isBlank() && text.endsWith(body)) {
+            return text.substring(0, text.length() - body.length()).stripTrailing();
+        }
+        return text;
     }
 
     private String initialResponseBody() {
         if (savedRequest == null || savedRequest.responseBody == null) {
             return "";
         }
-        return savedRequest.responseBody;
+        return JsonBodyFormatter.formatIfJson("", savedRequest.responseBody);
     }
 
     private void rememberEndpointRequest() {
@@ -598,7 +767,7 @@ public final class CallEndpointDialog extends DialogWrapper {
         data.requestParams = requestParamsTable.toMap();
         data.headers = changedValues(headersTable.toMap(), defaultHeaders());
         data.body = bodyArea.getText();
-        data.responseText = responseView.getText();
+        data.responseText = responseHeaderView.getText() + (responseBodyView.getText().isBlank() ? "" : "\n\n" + responseBodyView.getText());
         data.responseBody = responseBody;
         settings.rememberEndpointRequest(endpointKey, data);
     }
@@ -626,7 +795,6 @@ public final class CallEndpointDialog extends DialogWrapper {
     private Map<String, String> defaultEditableVariables() {
         Map<String, String> variables = new LinkedHashMap<>();
         variables.putAll(globalSettings.getVariables());
-        variables.putAll(settings.getVariables());
         return variables;
     }
 
@@ -643,8 +811,12 @@ public final class CallEndpointDialog extends DialogWrapper {
     private Map<String, String> defaultHeaders() {
         Map<String, String> headers = new LinkedHashMap<>();
         headers.putAll(KeyValueParser.parseLines(globalSettings.getDefaultHeaders()));
-        headers.putAll(KeyValueParser.parseLines(settings.getDefaultHeaders()));
         return headers;
+    }
+
+    private String scannedPrefixText() {
+        String prefix = ProjectConfigResolver.requestPathPrefix(ProjectConfigResolver.resolve(project));
+        return "/".equals(prefix) ? "None" : prefix;
     }
 
     private static String toCurlCommand(RequestData requestData) {
@@ -707,16 +879,32 @@ public final class CallEndpointDialog extends DialogWrapper {
         form.add(new JBScrollPane(area), componentConstraints);
     }
 
-    private static void addBodyRow(JPanel form, int row, String label, JBTextArea area, JLabel validationLabel) {
+    private static void addBodyRow(JPanel form, int row, String label, JBTextArea area, JLabel validationLabel, int areaHeight) {
         GridBagConstraints labelConstraints = labelConstraints(row);
         form.add(new JLabel(label), labelConstraints);
 
+        JBScrollPane bodyScrollPane = new JBScrollPane(area);
+        bodyScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        bodyScrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+        setFixedHeight(bodyScrollPane, areaHeight);
+
         JPanel bodyPanel = new JPanel(new BorderLayout(0, 4));
-        bodyPanel.add(new JBScrollPane(area), BorderLayout.CENTER);
+        bodyPanel.add(bodyScrollPane, BorderLayout.CENTER);
         bodyPanel.add(validationLabel, BorderLayout.SOUTH);
 
         GridBagConstraints componentConstraints = componentConstraints(row);
         form.add(bodyPanel, componentConstraints);
+    }
+
+    private static int fixedTextAreaHeight(JBTextArea area, int rows) {
+        FontMetrics metrics = area.getFontMetrics(area.getFont());
+        return Math.max(JBUI.scale(96), metrics.getHeight() * rows + JBUI.scale(18));
+    }
+
+    private static void setFixedHeight(JComponent component, int height) {
+        Dimension preferredSize = component.getPreferredSize();
+        component.setPreferredSize(new Dimension(preferredSize.width, height));
+        component.setMinimumSize(new Dimension(1, height));
     }
 
     private static GridBagConstraints labelConstraints(int row) {
@@ -738,11 +926,94 @@ public final class CallEndpointDialog extends DialogWrapper {
         return constraints;
     }
 
+    private static final class ResizableBodyPanel extends JPanel {
+        private static final int DRAG_HEIGHT = 10;
+        private static final int MAX_BODY_HEIGHT = 420;
+
+        private final JBScrollPane scrollPane;
+        private final int minHeight;
+        private int currentHeight;
+        private int dragStartY;
+        private int dragStartHeight;
+
+        private ResizableBodyPanel(JBTextArea area, JLabel validationLabel, int initialHeight) {
+            super(new BorderLayout(0, 4));
+            minHeight = initialHeight;
+            currentHeight = initialHeight;
+            scrollPane = new JBScrollPane(area);
+            scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+            scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+            setFixedHeight(scrollPane, currentHeight);
+
+            JComponent grip = new ResizeGrip();
+            MouseAdapter resizeHandler = new MouseAdapter() {
+                @Override
+                public void mousePressed(MouseEvent event) {
+                    dragStartY = event.getYOnScreen();
+                    dragStartHeight = currentHeight;
+                }
+
+                @Override
+                public void mouseDragged(MouseEvent event) {
+                    updateBodyHeight(dragStartHeight + event.getYOnScreen() - dragStartY);
+                }
+            };
+            grip.addMouseListener(resizeHandler);
+            grip.addMouseMotionListener(resizeHandler);
+
+            JPanel bodyPanel = new JPanel(new BorderLayout());
+            bodyPanel.add(scrollPane, BorderLayout.CENTER);
+            bodyPanel.add(grip, BorderLayout.SOUTH);
+            add(bodyPanel, BorderLayout.CENTER);
+            add(validationLabel, BorderLayout.SOUTH);
+        }
+
+        private void updateBodyHeight(int requestedHeight) {
+            int nextHeight = Math.max(minHeight, Math.min(JBUI.scale(MAX_BODY_HEIGHT), requestedHeight));
+            if (nextHeight == currentHeight) {
+                return;
+            }
+            currentHeight = nextHeight;
+            setFixedHeight(scrollPane, currentHeight);
+            revalidate();
+            repaint();
+            Window window = SwingUtilities.getWindowAncestor(this);
+            if (window != null) {
+                window.validate();
+            }
+        }
+
+        private static final class ResizeGrip extends JComponent {
+            private ResizeGrip() {
+                setPreferredSize(new Dimension(1, JBUI.scale(DRAG_HEIGHT)));
+                setMinimumSize(new Dimension(1, JBUI.scale(DRAG_HEIGHT)));
+                setCursor(Cursor.getPredefinedCursor(Cursor.S_RESIZE_CURSOR));
+                setToolTipText("Drag to resize body");
+            }
+
+            @Override
+            protected void paintComponent(Graphics graphics) {
+                super.paintComponent(graphics);
+                Graphics2D graphics2D = (Graphics2D) graphics.create();
+                try {
+                    graphics2D.setColor(JBColor.border());
+                    int centerY = getHeight() / 2;
+                    int centerX = getWidth() / 2;
+                    int width = JBUI.scale(42);
+                    graphics2D.drawLine(centerX - width / 2, centerY, centerX + width / 2, centerY);
+                } finally {
+                    graphics2D.dispose();
+                }
+            }
+        }
+    }
+
     private static final class KeyValueTable extends JPanel {
         private static final int MIN_FIELD_HEIGHT = 30;
         private static final int ROW_GAP = 6;
         private static final int TABLE_WIDTH = 640;
 
+        private final JPanel headerPanel;
         private final JPanel rowsPanel = new JPanel(new GridBagLayout());
         private final JBScrollPane rowsScrollPane = new JBScrollPane(rowsPanel);
         private final List<Row> rows = new ArrayList<>();
@@ -751,9 +1022,10 @@ public final class CallEndpointDialog extends DialogWrapper {
         private int selectedRow = -1;
 
         private KeyValueTable(String keyTitle, String valueTitle, Map<String, String> values, int visibleRows) {
-            super(new BorderLayout(0, 4));
+            super(new BorderLayout(0, 2));
             this.visibleRows = Math.max(1, visibleRows);
-            add(createHeader(keyTitle, valueTitle), BorderLayout.NORTH);
+            headerPanel = createHeader(keyTitle, valueTitle);
+            add(headerPanel, BorderLayout.NORTH);
             rowsScrollPane.setBorder(BorderFactory.createEmptyBorder());
             rowsScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
             rowsScrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
@@ -761,7 +1033,6 @@ public final class CallEndpointDialog extends DialogWrapper {
             rowsScrollPane.setOpaque(false);
             rowsScrollPane.getVerticalScrollBar().setUnitIncrement(rowStride());
             add(rowsScrollPane, BorderLayout.CENTER);
-            add(createButtonPanel(), BorderLayout.SOUTH);
             setRows(values);
         }
 
@@ -782,51 +1053,50 @@ public final class CallEndpointDialog extends DialogWrapper {
 
         private void setRows(Map<String, String> values) {
             rows.clear();
-            if (values != null) {
+            if (values != null && !values.isEmpty()) {
                 for (Map.Entry<String, String> entry : values.entrySet()) {
-                    addRow(entry.getKey(), entry.getValue(), false);
+                    addRowAt(rows.size(), entry.getKey(), entry.getValue(), false);
                 }
+            } else {
+                addRowAt(0, "", "", false);
             }
             rebuildRows();
         }
 
         private JPanel createHeader(String keyTitle, String valueTitle) {
             JPanel header = new JPanel(new GridBagLayout());
-            GridBagConstraints keyConstraints = rowConstraints(0, 0, 0.35);
+            header.add(new JLabel(""), rowConstraints(0, 0, 0));
+
+            GridBagConstraints keyConstraints = rowConstraints(0, 1, 0.35);
             header.add(new JLabel(keyTitle), keyConstraints);
 
-            GridBagConstraints valueConstraints = rowConstraints(0, 1, 0.65);
+            GridBagConstraints valueConstraints = rowConstraints(0, 2, 0.65);
             header.add(new JLabel(valueTitle), valueConstraints);
             return header;
         }
 
-        private JPanel createButtonPanel() {
-            JPanel panel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
-            JButton addButton = new JButton("Add");
+        private void addRowAt(int index, String key, String value, boolean focus) {
+            Row row = new Row(new JPanel(new FlowLayout(FlowLayout.LEFT, 2, 0)), textField(), textField());
+            JButton addButton = rowButton("+");
+            JButton removeButton = rowButton("-");
             addButton.addActionListener(event -> {
-                addRow("", "", true);
+                int rowIndex = rows.indexOf(row);
+                addRowAt(rowIndex < 0 ? rows.size() : rowIndex + 1, "", "", true);
                 fireChanged();
             });
-
-            JButton removeButton = new JButton("Remove");
             removeButton.addActionListener(event -> {
-                removeSelectedRow();
+                removeRow(rows.indexOf(row));
                 fireChanged();
             });
-            panel.add(addButton);
-            panel.add(removeButton);
-            return panel;
-        }
-
-        private void addRow(String key, String value, boolean focus) {
-            Row row = new Row(textField(), textField());
+            row.controlsPanel().add(addButton);
+            row.controlsPanel().add(removeButton);
             row.keyField().setText(key == null ? "" : key);
             row.valueField().setText(value == null ? "" : value);
             addFieldListeners(row);
-            rows.add(row);
+            rows.add(Math.max(0, Math.min(index, rows.size())), row);
             rebuildRows();
             if (focus) {
-                focusRow(rows.size() - 1);
+                focusRow(rows.indexOf(row));
             }
         }
 
@@ -860,13 +1130,17 @@ public final class CallEndpointDialog extends DialogWrapper {
             row.valueField().addFocusListener(focusListener);
         }
 
-        private void removeSelectedRow() {
-            if (rows.isEmpty()) {
+        private void removeRow(int rowIndex) {
+            if (rowIndex < 0 || rowIndex >= rows.size()) {
                 return;
             }
-            int row = selectedRow >= 0 && selectedRow < rows.size() ? selectedRow : rows.size() - 1;
-            rows.remove(row);
-            selectedRow = Math.min(row, rows.size() - 1);
+            rows.remove(rowIndex);
+            if (rows.isEmpty()) {
+                addRowAt(0, "", "", false);
+                selectedRow = 0;
+                return;
+            }
+            selectedRow = Math.min(rowIndex, rows.size() - 1);
             rebuildRows();
             if (selectedRow >= 0) {
                 focusRow(selectedRow);
@@ -877,16 +1151,30 @@ public final class CallEndpointDialog extends DialogWrapper {
             rowsPanel.removeAll();
             for (int index = 0; index < rows.size(); index++) {
                 Row row = rows.get(index);
-                rowsPanel.add(row.keyField(), rowConstraints(index, 0, 0.35));
-                rowsPanel.add(row.valueField(), rowConstraints(index, 1, 0.65));
+                rowsPanel.add(row.controlsPanel(), rowConstraints(index, 0, 0));
+                rowsPanel.add(row.keyField(), rowConstraints(index, 1, 0.35));
+                rowsPanel.add(row.valueField(), rowConstraints(index, 2, 0.65));
             }
+            GridBagConstraints fillerConstraints = new GridBagConstraints();
+            fillerConstraints.gridx = 0;
+            fillerConstraints.gridy = rows.size();
+            fillerConstraints.gridwidth = 3;
+            fillerConstraints.weightx = 1;
+            fillerConstraints.weighty = 1;
+            fillerConstraints.fill = GridBagConstraints.BOTH;
+            rowsPanel.add(new JPanel(), fillerConstraints);
             int visibleContentRows = Math.min(visibleRows, rows.size());
             int viewportHeight = rowStride() * visibleContentRows;
             int contentRows = rows.size();
             rowsPanel.setPreferredSize(new Dimension(TABLE_WIDTH, rowStride() * contentRows));
             rowsPanel.setMinimumSize(new Dimension(1, 0));
             rowsScrollPane.setPreferredSize(new Dimension(TABLE_WIDTH, viewportHeight));
-            rowsScrollPane.setMinimumSize(new Dimension(1, 0));
+            rowsScrollPane.setMinimumSize(new Dimension(1, viewportHeight));
+            int tableHeight = headerPanel.getPreferredSize().height
+                    + viewportHeight
+                    + JBUI.scale(4);
+            setPreferredSize(new Dimension(TABLE_WIDTH, tableHeight));
+            setMinimumSize(new Dimension(1, tableHeight));
             rowsPanel.revalidate();
             rowsPanel.repaint();
             rowsScrollPane.revalidate();
@@ -910,10 +1198,20 @@ public final class CallEndpointDialog extends DialogWrapper {
             constraints.gridx = column;
             constraints.gridy = row;
             constraints.weightx = weightx;
-            constraints.fill = GridBagConstraints.HORIZONTAL;
+            constraints.fill = column == 0 ? GridBagConstraints.NONE : GridBagConstraints.HORIZONTAL;
             constraints.anchor = GridBagConstraints.NORTHWEST;
             constraints.insets.set(0, column == 0 ? 0 : 6, ROW_GAP, 0);
             return constraints;
+        }
+
+        private static JButton rowButton(String text) {
+            JButton button = new JButton(text);
+            button.setFocusable(false);
+            button.setMargin(JBUI.insets(0, 3));
+            int size = fieldHeight(new JBTextField());
+            button.setPreferredSize(new Dimension(JBUI.scale(24), size));
+            button.setMinimumSize(new Dimension(JBUI.scale(24), size));
+            return button;
         }
 
         private static JBTextField textField() {
@@ -955,13 +1253,13 @@ public final class CallEndpointDialog extends DialogWrapper {
             }
         }
 
-        private record Row(JBTextField keyField, JBTextField valueField) {
+        private record Row(JPanel controlsPanel, JBTextField keyField, JBTextField valueField) {
         }
     }
 
-    private record RequestData(String hostTemplate, String method, String url, Map<String, String> headers, String body) {
+    private record RequestData(String hostTemplate, String method, String url, String pathPreview, Map<String, String> headers, String body) {
     }
 
-    private record ResponseData(String text, String body) {
+    private record ResponseData(String headers, String body) {
     }
 }

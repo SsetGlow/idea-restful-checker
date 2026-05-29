@@ -8,14 +8,14 @@
         <projectService serviceImplementation="com.ssetglow.restfulchecker.endpoint.RestEndpointService"/>
         <applicationConfigurable
                 parentId="tools"
-                id="com.ssetglow.idea-restful-checker.global-settings"
-                displayName="idea-restful-checker"
+                id="com.ssetglow.restful-checker.global-settings"
+                displayName="restful-checker"
                 instance="com.ssetglow.restfulchecker.settings.RestCheckerGlobalConfigurable"/>
-        <projectConfigurable
-                parentId="tools"
-                id="com.ssetglow.idea-restful-checker.settings"
-                displayName="idea-restful-checker Project"
-                instance="com.ssetglow.restfulchecker.settings.RestCheckerConfigurable"/>
+        <toolWindow
+                id="Restful"
+                anchor="right"
+                icon="/icons/restfulToolWindow.svg"
+                factoryClass="com.ssetglow.restfulchecker.toolwindow.RestfulToolWindowFactory"/>
         <codeInsight.lineMarkerProvider
                 language="JAVA"
                 implementationClass="com.ssetglow.restfulchecker.gutter.RestEndpointLineMarkerProvider"/>
@@ -23,7 +23,7 @@
 
     <actions>
         <action
-                id="com.ssetglow.idea-restful-checker.SearchEndpoints"
+                id="com.ssetglow.restful-checker.SearchEndpoints"
                 class="com.ssetglow.restfulchecker.action.SearchEndpointAction"
                 text="Search REST Endpoint"
                 description="Search project REST endpoints and call one">
@@ -33,7 +33,7 @@
         </action>
 
         <action
-                id="com.ssetglow.idea-restful-checker.CallEndpointAtCaret"
+                id="com.ssetglow.restful-checker.CallEndpointAtCaret"
                 class="com.ssetglow.restfulchecker.action.CallEndpointAtCaretAction"
                 text="Call REST Endpoint"
                 description="Call the REST endpoint at the current caret">

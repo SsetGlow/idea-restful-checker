@@ -34,12 +34,12 @@ public final class RestCheckerConfigurable implements SearchableConfigurable {
 
     @Override
     public @NotNull String getId() {
-        return "com.ssetglow.idea-restful-checker.settings";
+        return "com.ssetglow.restful-checker.settings";
     }
 
     @Override
     public @Nls String getDisplayName() {
-        return "idea-restful-checker Project";
+        return "restful-checker Project";
     }
 
     @Override

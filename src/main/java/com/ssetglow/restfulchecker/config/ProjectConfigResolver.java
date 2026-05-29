@@ -1,6 +1,7 @@
 package com.ssetglow.restfulchecker.config;
 
 import com.intellij.openapi.project.Project;
+import com.ssetglow.restfulchecker.util.PathUtil;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -25,6 +26,7 @@ public final class ProjectConfigResolver {
         values.put("server.servlet.context-path", "");
         values.put("server.context-path", "");
         values.put("spring.mvc.servlet.path", "");
+        values.put("spring.webflux.base-path", "");
 
         String basePath = project.getBasePath();
         if (basePath == null || basePath.isBlank()) {
@@ -52,8 +54,13 @@ public final class ProjectConfigResolver {
     }
 
     public static String servletPath(Map<String, String> values) {
-        String current = values.get("spring.mvc.servlet.path");
+        String current = firstNonBlank(values.get("spring.mvc.servlet.path"), values.get("spring.webflux.base-path"));
         return current == null ? "" : current;
+    }
+
+    public static String requestPathPrefix(Map<String, String> values) {
+        String prefix = PathUtil.joinPath(contextPath(values), servletPath(values));
+        return "/".equals(prefix) ? "/" : prefix;
     }
 
     private static boolean isSpringConfigFile(Path path) {
