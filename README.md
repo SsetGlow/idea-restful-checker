@@ -1,23 +1,33 @@
 # restful-checker
 
-IntelliJ IDEA plugin for searching Spring-style REST endpoints and calling them from the editor.
+`restful-checker` is an IntelliJ IDEA plugin for finding Spring-style REST endpoints in a project and calling them directly inside the IDE.
 
-## Features
+## What It Does
 
-- Search REST endpoints with `Command + \` on macOS.
-- Browse and call endpoints from the right-side `Restful` tool window.
-- Show a gutter action on Spring mapping methods.
-- Call endpoints with editable hosts, headers, query parameters, request bodies, and path variables.
-- Infer first-time request params and body defaults from explicit `@RequestParam` and `@RequestBody` parameters.
-- Resolve host placeholders and Spring path prefixes from project configuration and plugin variables.
+- Finds Spring MVC endpoints declared with mapping annotations.
+- Shows endpoint call actions in the editor gutter.
+- Provides a `Restful` tool window for browsing and opening endpoints.
+- Opens a REST call dialog with editable host, URL preview, path variables, request parameters, headers, and request body.
+- Generates a cURL preview for the current request.
+- Displays response headers and body inside the dialog.
+- Remembers per-endpoint request data and cURL panel height.
+- Resolves Spring path prefixes and host placeholders from common project configuration files and plugin variables.
 
-## Development
+## Usage
 
-```bash
-./gradlew runIde
-```
+1. Install the plugin ZIP from disk in IntelliJ IDEA.
+2. Open a Spring project.
+3. Use one of these entry points:
+   - Press `Command + \` on macOS to search REST endpoints.
+   - Open the right-side `Restful` tool window to browse endpoints.
+   - Click the gutter action beside a Spring mapping method.
+4. In the call dialog:
+   - Select or type the host.
+   - Edit path variables, request parameters, headers, and body as needed.
+   - Review the generated cURL command.
+   - Click `Send` to call the endpoint.
 
-The plugin scans common Spring configuration files such as `application.yml`, `application.yaml`, and `application.properties`.
+The call dialog is modeless, so it does not block the rest of IDEA while a local request is stopped at a debugger breakpoint.
 
 ## Build
 
@@ -25,29 +35,4 @@ The plugin scans common Spring configuration files such as `application.yml`, `a
 ./gradlew buildPlugin
 ```
 
-`buildPlugin` and `publishPlugin` automatically increment `pluginVersion` in `gradle.properties` before packaging, so each generated Marketplace artifact has a new patch version. The ZIP artifact is written to `build/distributions/`.
-
-## Publish to JetBrains Marketplace
-
-First-time publication must be created from the JetBrains Marketplace web UI:
-
-1. Log in to https://plugins.jetbrains.com.
-2. Open the account menu and choose `Upload plugin`.
-3. Select or create a vendor profile and accept the Marketplace Developer Agreement.
-4. Upload the ZIP from `build/distributions/`.
-5. Fill in plugin details, license/EULA, tags, release channel, source code URL, and hidden/ads flags as needed.
-
-After the plugin exists on Marketplace, later updates can be uploaded with Gradle:
-
-```bash
-export PUBLISH_TOKEN=perm:...
-./gradlew publishPlugin
-```
-
-If signing is required, provide the signing values through environment variables before publishing:
-
-```bash
-export CERTIFICATE_CHAIN=...
-export PRIVATE_KEY=...
-export PRIVATE_KEY_PASSWORD=...
-```
+The generated plugin ZIP is written to `build/distributions/`.
