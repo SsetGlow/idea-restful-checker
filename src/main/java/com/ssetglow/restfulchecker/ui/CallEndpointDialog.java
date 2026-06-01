@@ -2,13 +2,11 @@ package com.ssetglow.restfulchecker.ui;
 
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
-import com.intellij.openapi.ide.CopyPasteManager;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
-import com.intellij.openapi.util.IconLoader;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
@@ -39,7 +37,6 @@ import javax.swing.JSplitPane;
 import javax.swing.JTabbedPane;
 import javax.swing.SwingUtilities;
 import javax.swing.KeyStroke;
-import javax.swing.Timer;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import javax.swing.plaf.basic.BasicSplitPaneDivider;
@@ -52,7 +49,6 @@ import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.FontMetrics;
 import java.awt.Graphics;
-import java.awt.Graphics2D;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Window;
@@ -62,9 +58,6 @@ import java.awt.event.FocusEvent;
 import java.awt.event.InputEvent;
 import java.awt.event.ItemEvent;
 import java.awt.event.KeyEvent;
-import java.awt.event.MouseAdapter;
-import java.awt.event.MouseEvent;
-import java.awt.datatransfer.StringSelection;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -80,7 +73,9 @@ import java.util.Objects;
 public final class CallEndpointDialog extends DialogWrapper {
     private static final int REQUEST_BODY_ROWS = 8;
     private static final int OPTIONAL_BODY_ROWS = 4;
-    private static final int BODY_TAB_INITIAL_ROWS = 3;
+    private static final int SPLIT_PANE_DRAG_SIZE = 5;
+    private static final int CURL_SPLIT_PANE_DRAG_SIZE = 10;
+    private static final int BODY_RESIZE_DRAG_SIZE = 10;
 
     private final Project project;
     private final RestEndpoint endpoint;
@@ -100,13 +95,10 @@ public final class CallEndpointDialog extends DialogWrapper {
     private JLabel bodyValidationLabel;
     private JBTextArea responseHeaderView;
     private JBTextArea responseBodyView;
-    private JButton copyResponseBodyButton;
-    private JLabel copyResponseBodyStatus;
-    private Timer copyResponseBodyStatusTimer;
     private String responseBody = "";
 
     public CallEndpointDialog(Project project, RestEndpoint endpoint) {
-        super(project, true);
+        super(project, false, DialogWrapper.IdeModalityType.MODELESS);
         this.project = project;
         this.endpoint = endpoint;
         this.settings = RestCheckerSettings.getInstance(project);
@@ -160,8 +152,6 @@ public final class CallEndpointDialog extends DialogWrapper {
         responseBodyView.setLineWrap(false);
         responseBodyView.setText(initialResponseBody());
         responseBody = initialResponseBody();
-        copyResponseBodyButton = createCopyResponseBodyButton();
-        copyResponseBodyStatus = createCopyResponseBodyStatus();
 
         DocumentListener previewListener = new DocumentListener() {
             @Override
@@ -206,6 +196,7 @@ public final class CallEndpointDialog extends DialogWrapper {
         }
         addRow(form, row++, "URL", urlPreview);
         addRow(form, row++, "Request", createRequestTabs());
+        addVerticalFiller(form, row);
 
         JPanel requestPanel = new JPanel(new BorderLayout());
         requestPanel.add(form, BorderLayout.NORTH);
@@ -214,16 +205,17 @@ public final class CallEndpointDialog extends DialogWrapper {
         requestScrollPane.setBorder(BorderFactory.createEmptyBorder());
         requestScrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         requestScrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
+        requestScrollPane.setMinimumSize(new Dimension(1, JBUI.scale(180)));
 
         JSplitPane leftPanel = createLeftPanel(requestScrollPane);
         JPanel responsePanel = createResponsePanel();
-        updateCopyResponseBodyButton();
 
         JSplitPane panel = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, responsePanel);
         styleSplitPane(panel);
         panel.setContinuousLayout(true);
         panel.setResizeWeight(0.64);
         panel.setDividerLocation(JBUI.scale(760));
+        panel.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY, event -> pinScrollPaneToTop(requestScrollPane));
         panel.setPreferredSize(new Dimension(1180, 760));
         panel.setMinimumSize(new Dimension(960, 560));
         updatePreview();
@@ -369,7 +361,6 @@ public final class CallEndpointDialog extends DialogWrapper {
         responseBodyView.setText(result.formatted());
         responseBodyView.setCaretPosition(Math.min(caretPosition, responseBodyView.getText().length()));
         responseBody = responseBodyView.getText();
-        updateCopyResponseBodyButton();
     }
 
     private void updateBodyValidation() {
@@ -489,7 +480,7 @@ public final class CallEndpointDialog extends DialogWrapper {
         tabs.addTab("Body", new ResizableBodyPanel(
                 bodyArea,
                 bodyValidationLabel,
-                fixedTextAreaHeight(bodyArea, BODY_TAB_INITIAL_ROWS)
+                fixedTextAreaHeight(bodyArea, bodyArea.getRows())
         ));
         tabs.addChangeListener(event -> {
             if (tabs.getSelectedComponent() instanceof ResizableBodyPanel) {
@@ -505,7 +496,7 @@ public final class CallEndpointDialog extends DialogWrapper {
         curlPanel.setPreferredSize(new Dimension(1, savedCurlHeight > 0 ? savedCurlHeight : JBUI.scale(300)));
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, requestScrollPane, curlPanel);
-        styleSplitPane(splitPane);
+        styleSplitPane(splitPane, CURL_SPLIT_PANE_DRAG_SIZE, true);
         splitPane.setContinuousLayout(true);
         splitPane.setResizeWeight(0.6);
         splitPane.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY, event -> rememberCurlInfoHeight(splitPane));
@@ -531,7 +522,7 @@ public final class CallEndpointDialog extends DialogWrapper {
         scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
         panel.add(header, BorderLayout.NORTH);
         panel.add(scrollPane, BorderLayout.CENTER);
-        panel.setMinimumSize(new Dimension(1, JBUI.scale(160)));
+        panel.setMinimumSize(new Dimension(1, JBUI.scale(96)));
         return panel;
     }
 
@@ -571,8 +562,12 @@ public final class CallEndpointDialog extends DialogWrapper {
     }
 
     private static void styleSplitPane(JSplitPane splitPane) {
+        styleSplitPane(splitPane, SPLIT_PANE_DRAG_SIZE, false);
+    }
+
+    private static void styleSplitPane(JSplitPane splitPane, int dividerSize, boolean paintHandle) {
         splitPane.setBorder(BorderFactory.createEmptyBorder());
-        splitPane.setDividerSize(JBUI.scale(6));
+        splitPane.setDividerSize(JBUI.scale(dividerSize));
         splitPane.setOpaque(false);
         splitPane.setUI(new BasicSplitPaneUI() {
             @Override
@@ -580,65 +575,48 @@ public final class CallEndpointDialog extends DialogWrapper {
                 return new BasicSplitPaneDivider(this) {
                     {
                         setBorder(BorderFactory.createEmptyBorder());
+                        int cursor = splitPane.getOrientation() == JSplitPane.VERTICAL_SPLIT
+                                ? Cursor.S_RESIZE_CURSOR
+                                : Cursor.E_RESIZE_CURSOR;
+                        setCursor(Cursor.getPredefinedCursor(cursor));
                     }
 
                     @Override
                     public void paint(Graphics graphics) {
-                        graphics.setColor(JBColor.border());
+                        java.awt.Color background = getParent() == null ? getBackground() : getParent().getBackground();
+                        if (background == null) {
+                            background = javax.swing.UIManager.getColor("Panel.background");
+                        }
+                        graphics.setColor(background == null ? JBColor.border() : background);
                         graphics.fillRect(0, 0, getWidth(), getHeight());
+                        if (paintHandle) {
+                            paintSplitPaneHandle(graphics, splitPane.getOrientation(), getWidth(), getHeight());
+                        }
                     }
                 };
             }
         });
     }
 
+    private static void paintSplitPaneHandle(Graphics graphics, int orientation, int width, int height) {
+        graphics.setColor(JBColor.border());
+        if (orientation == JSplitPane.VERTICAL_SPLIT) {
+            int centerY = height / 2;
+            int centerX = width / 2;
+            int lineWidth = Math.min(JBUI.scale(64), Math.max(0, width - JBUI.scale(24)));
+            graphics.drawLine(centerX - lineWidth / 2, centerY, centerX + lineWidth / 2, centerY);
+        } else {
+            int centerX = width / 2;
+            int centerY = height / 2;
+            int lineHeight = Math.min(JBUI.scale(64), Math.max(0, height - JBUI.scale(24)));
+            graphics.drawLine(centerX, centerY - lineHeight / 2, centerX, centerY + lineHeight / 2);
+        }
+    }
+
     private JPanel createResponseHeader() {
         JPanel header = new JPanel(new BorderLayout());
-        JPanel copyPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
-        copyPanel.add(copyResponseBodyStatus);
-        copyPanel.add(copyResponseBodyButton);
         header.add(new JLabel("Response"), BorderLayout.WEST);
-        header.add(copyPanel, BorderLayout.EAST);
         return header;
-    }
-
-    private JButton createCopyResponseBodyButton() {
-        JButton button = new JButton(IconLoader.getIcon("/icons/copyResponseBody.svg", CallEndpointDialog.class));
-        button.setToolTipText("Copy response body");
-        button.setFocusable(false);
-        button.addActionListener(event -> copyResponseBody());
-        return button;
-    }
-
-    private JLabel createCopyResponseBodyStatus() {
-        JLabel label = new JLabel("Copied");
-        label.setForeground(JBColor.GRAY);
-        label.setVisible(false);
-        return label;
-    }
-
-    private void copyResponseBody() {
-        if (responseBody == null || responseBody.isBlank()) {
-            return;
-        }
-        CopyPasteManager.getInstance().setContents(new StringSelection(responseBody));
-        showCopyResponseBodyFeedback();
-    }
-
-    private void showCopyResponseBodyFeedback() {
-        copyResponseBodyStatus.setVisible(true);
-        copyResponseBodyStatus.revalidate();
-        copyResponseBodyStatus.repaint();
-        if (copyResponseBodyStatusTimer != null && copyResponseBodyStatusTimer.isRunning()) {
-            copyResponseBodyStatusTimer.stop();
-        }
-        copyResponseBodyStatusTimer = new Timer(1200, event -> {
-            copyResponseBodyStatus.setVisible(false);
-            copyResponseBodyStatus.revalidate();
-            copyResponseBodyStatus.repaint();
-        });
-        copyResponseBodyStatusTimer.setRepeats(false);
-        copyResponseBodyStatusTimer.start();
     }
 
     private void setResponse(ResponseData responseData) {
@@ -647,7 +625,6 @@ public final class CallEndpointDialog extends DialogWrapper {
         responseBodyView.setText(responseData.body());
         responseBodyView.setCaretPosition(0);
         responseBody = responseData.body();
-        updateCopyResponseBodyButton();
     }
 
     private void showTransientResponse(String responseText) {
@@ -655,13 +632,6 @@ public final class CallEndpointDialog extends DialogWrapper {
         responseHeaderView.setCaretPosition(0);
         responseBodyView.setText("");
         responseBody = "";
-        updateCopyResponseBodyButton();
-    }
-
-    private void updateCopyResponseBodyButton() {
-        if (copyResponseBodyButton != null) {
-            copyResponseBodyButton.setEnabled(responseBody != null && !responseBody.isBlank());
-        }
     }
 
     private void updatePreview() {
@@ -871,6 +841,25 @@ public final class CallEndpointDialog extends DialogWrapper {
         form.add(component, componentConstraints);
     }
 
+    private static void addVerticalFiller(JPanel form, int row) {
+        GridBagConstraints constraints = new GridBagConstraints();
+        constraints.gridx = 0;
+        constraints.gridy = row;
+        constraints.gridwidth = 2;
+        constraints.weightx = 1;
+        constraints.weighty = 1;
+        constraints.fill = GridBagConstraints.BOTH;
+        form.add(new JPanel(), constraints);
+    }
+
+    private static void pinScrollPaneToTop(JBScrollPane scrollPane) {
+        SwingUtilities.invokeLater(() -> {
+            scrollPane.getViewport().setViewPosition(new java.awt.Point(0, 0));
+            scrollPane.revalidate();
+            scrollPane.repaint();
+        });
+    }
+
     private static void addTextRow(JPanel form, int row, String label, JBTextArea area) {
         GridBagConstraints labelConstraints = labelConstraints(row);
         form.add(new JLabel(label), labelConstraints);
@@ -927,83 +916,46 @@ public final class CallEndpointDialog extends DialogWrapper {
     }
 
     private static final class ResizableBodyPanel extends JPanel {
-        private static final int DRAG_HEIGHT = 10;
         private static final int MAX_BODY_HEIGHT = 420;
 
-        private final JBScrollPane scrollPane;
-        private final int minHeight;
-        private int currentHeight;
-        private int dragStartY;
-        private int dragStartHeight;
+        private final JSplitPane splitPane;
+        private final int initialHeight;
 
         private ResizableBodyPanel(JBTextArea area, JLabel validationLabel, int initialHeight) {
-            super(new BorderLayout(0, 4));
-            minHeight = initialHeight;
-            currentHeight = initialHeight;
-            scrollPane = new JBScrollPane(area);
+            super(new BorderLayout());
+            this.initialHeight = Math.min(JBUI.scale(MAX_BODY_HEIGHT), initialHeight);
+
+            JBScrollPane scrollPane = new JBScrollPane(area);
             scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
             scrollPane.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
-            setFixedHeight(scrollPane, currentHeight);
+            scrollPane.setMinimumSize(new Dimension(1, fixedTextAreaHeight(area, 2)));
+            scrollPane.setPreferredSize(new Dimension(1, this.initialHeight));
 
-            JComponent grip = new ResizeGrip();
-            MouseAdapter resizeHandler = new MouseAdapter() {
-                @Override
-                public void mousePressed(MouseEvent event) {
-                    dragStartY = event.getYOnScreen();
-                    dragStartHeight = currentHeight;
-                }
+            JPanel validationPanel = new JPanel(new BorderLayout());
+            validationPanel.add(validationLabel, BorderLayout.NORTH);
+            int validationHeight = Math.max(JBUI.scale(24), validationLabel.getPreferredSize().height);
+            validationPanel.setMinimumSize(new Dimension(1, validationHeight));
+            validationPanel.setPreferredSize(new Dimension(1, Math.max(validationHeight, JBUI.scale(MAX_BODY_HEIGHT) - this.initialHeight)));
 
-                @Override
-                public void mouseDragged(MouseEvent event) {
-                    updateBodyHeight(dragStartHeight + event.getYOnScreen() - dragStartY);
-                }
-            };
-            grip.addMouseListener(resizeHandler);
-            grip.addMouseMotionListener(resizeHandler);
+            splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, scrollPane, validationPanel);
+            styleSplitPane(splitPane, BODY_RESIZE_DRAG_SIZE, true);
+            splitPane.setContinuousLayout(true);
+            splitPane.setResizeWeight(0);
+            add(splitPane, BorderLayout.CENTER);
 
-            JPanel bodyPanel = new JPanel(new BorderLayout());
-            bodyPanel.add(scrollPane, BorderLayout.CENTER);
-            bodyPanel.add(grip, BorderLayout.SOUTH);
-            add(bodyPanel, BorderLayout.CENTER);
-            add(validationLabel, BorderLayout.SOUTH);
+            int preferredHeight = JBUI.scale(MAX_BODY_HEIGHT) + JBUI.scale(BODY_RESIZE_DRAG_SIZE) + validationHeight;
+            setPreferredSize(new Dimension(1, preferredHeight));
+            setMinimumSize(new Dimension(1, this.initialHeight + JBUI.scale(BODY_RESIZE_DRAG_SIZE) + validationHeight));
+            SwingUtilities.invokeLater(this::resetDividerLocation);
         }
 
-        private void updateBodyHeight(int requestedHeight) {
-            int nextHeight = Math.max(minHeight, Math.min(JBUI.scale(MAX_BODY_HEIGHT), requestedHeight));
-            if (nextHeight == currentHeight) {
-                return;
-            }
-            currentHeight = nextHeight;
-            setFixedHeight(scrollPane, currentHeight);
-            revalidate();
-            repaint();
-            Window window = SwingUtilities.getWindowAncestor(this);
-            if (window != null) {
-                window.validate();
-            }
-        }
-
-        private static final class ResizeGrip extends JComponent {
-            private ResizeGrip() {
-                setPreferredSize(new Dimension(1, JBUI.scale(DRAG_HEIGHT)));
-                setMinimumSize(new Dimension(1, JBUI.scale(DRAG_HEIGHT)));
-                setCursor(Cursor.getPredefinedCursor(Cursor.S_RESIZE_CURSOR));
-                setToolTipText("Drag to resize body");
-            }
-
-            @Override
-            protected void paintComponent(Graphics graphics) {
-                super.paintComponent(graphics);
-                Graphics2D graphics2D = (Graphics2D) graphics.create();
-                try {
-                    graphics2D.setColor(JBColor.border());
-                    int centerY = getHeight() / 2;
-                    int centerX = getWidth() / 2;
-                    int width = JBUI.scale(42);
-                    graphics2D.drawLine(centerX - width / 2, centerY, centerX + width / 2, centerY);
-                } finally {
-                    graphics2D.dispose();
-                }
+        private void resetDividerLocation() {
+            int height = splitPane.getHeight();
+            int bottomHeight = splitPane.getBottomComponent().getMinimumSize().height;
+            if (height > 0) {
+                splitPane.setDividerLocation(Math.min(initialHeight, height - splitPane.getDividerSize() - bottomHeight));
+            } else {
+                splitPane.setDividerLocation(initialHeight);
             }
         }
     }
